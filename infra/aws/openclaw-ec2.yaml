@@ -1,0 +1,111 @@
+# OpenClaw Gateway on EC2 (eu-north-1)
+#
+# Provisions a single Ubuntu 24.04 instance with Docker, clones the OpenClaw repo,
+# builds the image, and runs the gateway via Docker Compose. Gateway is bound to
+# loopback; access via SSH tunnel only (no inbound 18789 in security group).
+#
+# Security group must allow inbound SSH (22) from your IP.
+# See: docs/install/aws-ec2.md
+
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "OpenClaw Gateway on EC2 - Ubuntu 24.04, Docker, SSH tunnel access"
+
+Parameters:
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Default: awspawlclick
+    Description: EC2 key pair for SSH access
+
+  InstanceType:
+    Type: String
+    Default: t3.large
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t3.medium
+      - t3.large
+    Description: EC2 instance type
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Default: vpc-05c0d292bf26d7bd1
+    Description: VPC for the instance
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Default: subnet-0954f659cbd458cca
+    Description: Subnet for the instance (use a public subnet if you need a public IP)
+
+  SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Default: sg-06969578c0d2792ef
+    Description: Security group (must allow inbound SSH 22 from your IP; no 18789)
+
+  BootVolumeSizeGb:
+    Type: Number
+    Default: 80
+    MinValue: 8
+    MaxValue: 100
+    Description: Root EBS volume size (GB), gp3
+
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Default: ami-08d5acd50b6a91c0c
+    Description: Custom OpenClaw gateway AMI (baked from direct-install instance)
+
+Resources:
+  OpenClawInstance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      Comment: OpenClaw Gateway - Docker Compose, loopback bind, SSH tunnel access
+    Properties:
+      ImageId: !Ref AmiId
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyName
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: "0"
+          GroupSet:
+            - !Ref SecurityGroupId
+          SubnetId: !Ref SubnetId
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref BootVolumeSizeGb
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          echo "OpenClaw direct-install instance booted via CloudFormation at $(date)" >> /var/log/openclaw-cfn-boot.log
+
+  OpenClawEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref OpenClawInstance
+
+Outputs:
+  InstanceId:
+    Description: EC2 instance ID
+    Value: !Ref OpenClawInstance
+    Export:
+      Name: !Sub "${AWS::StackName}-InstanceId"
+
+  PublicIp:
+    Description: Public IP (use for SSH and tunnel; empty if in private subnet)
+    Value: !GetAtt OpenClawInstance.PublicIp
+    Export:
+      Name: !Sub "${AWS::StackName}-PublicIp"
+
+  SshCommand:
+    Description: SSH command (replace KEY.pem and IP if needed)
+    Value: !Sub "ssh -i awspawlclick.pem ubuntu@${OpenClawInstance.PublicIp}"
+
+  TunnelCommand:
+    Description: SSH tunnel for Control UI (run on your laptop, then open http://127.0.0.1:18789/)
+    Value: !Sub "ssh -N -L 18789:127.0.0.1:18789 -i awspawlclick.pem ubuntu@${OpenClawInstance.PublicIp}"
+
+  ElasticIp:
+    Description: Elastic IP for the OpenClaw instance (stable external IP)
+    Value: !Ref OpenClawEip

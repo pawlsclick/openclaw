@@ -26,7 +26,7 @@ import {
   type ResolvedProviderAuth,
 } from "../model-auth.js";
 import { normalizeProviderId } from "../model-selection.js";
-import { ensureOpenClawModelsJson } from "../models-config.js";
+import { ensureOpenClawModelsJson, readProvidersFromModelsJson } from "../models-config.js";
 import {
   BILLING_ERROR_USER_MESSAGE,
   classifyFailoverReason,
@@ -115,12 +115,17 @@ export async function runEmbeddedPiAgent(
       const fallbackConfigured =
         (params.config?.agents?.defaults?.model?.fallbacks?.length ?? 0) > 0;
       await ensureOpenClawModelsJson(params.config, agentDir);
+      const mergedProviders = await readProvidersFromModelsJson(agentDir);
+      const effectiveConfig =
+        mergedProviders && Object.keys(mergedProviders).length > 0
+          ? { ...params.config, models: { ...params.config?.models, providers: mergedProviders } }
+          : params.config;
 
       const { model, error, authStorage, modelRegistry } = resolveModel(
         provider,
         modelId,
         agentDir,
-        params.config,
+        effectiveConfig,
       );
       if (!model) {
         throw new Error(error ?? `Unknown model: ${provider}/${modelId}`);

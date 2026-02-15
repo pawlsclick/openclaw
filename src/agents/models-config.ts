@@ -81,6 +81,18 @@ async function readJson(pathname: string): Promise<unknown> {
   }
 }
 
+/** Read merged providers from agent dir's models.json (written by ensureOpenClawModelsJson). Use when resolving the model so implicit providers like Ollama are available. */
+export async function readProvidersFromModelsJson(
+  agentDir: string,
+): Promise<Record<string, ProviderConfig> | null> {
+  const targetPath = path.join(agentDir, "models.json");
+  const existing = await readJson(targetPath);
+  if (!isRecord(existing) || !isRecord(existing.providers)) {
+    return null;
+  }
+  return existing.providers as Record<string, ProviderConfig>;
+}
+
 export async function ensureOpenClawModelsJson(
   config?: OpenClawConfig,
   agentDirOverride?: string,

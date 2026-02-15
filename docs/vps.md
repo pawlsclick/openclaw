@@ -20,7 +20,7 @@ deployments work at a high level.
 - **Hetzner (Docker)**: [Hetzner](/install/hetzner)
 - **GCP (Compute Engine)**: [GCP](/install/gcp)
 - **exe.dev** (VM + HTTPS proxy): [exe.dev](/install/exe-dev)
-- **AWS (EC2/Lightsail/free tier)**: works well too. Video guide:
+- **AWS EC2** (CloudFormation): [AWS EC2](/install/aws-ec2) — Ubuntu 24.04, Docker, SSH tunnel. AWS (EC2/Lightsail/free tier) also has a video guide:
   [https://x.com/techfrenAJ/status/2014934471095812547](https://x.com/techfrenAJ/status/2014934471095812547)
 
 ## How cloud setups work
