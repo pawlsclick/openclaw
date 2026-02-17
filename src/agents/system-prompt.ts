@@ -247,6 +247,8 @@ export function buildAgentSystemPrompt(params: {
     subagents: "List, steer, or kill sub-agent runs for this requester session",
     session_status:
       "Show a /status-equivalent status card (usage + time + Reasoning/Verbose/Elevated); use for model-use questions (📊 session_status); optional per-session model override",
+    get_billing_report:
+      "Return usage cost and token summary for a date range; use for end-of-day billing, daily cost report, or 'what did I spend?' Default: today. Optional: startDate/endDate (YYYY-MM-DD) or days",
     image: "Analyze an image with the configured image model",
   };
 
@@ -274,6 +276,7 @@ export function buildAgentSystemPrompt(params: {
     "sessions_send",
     "subagents",
     "session_status",
+    "get_billing_report",
     "image",
   ];
 

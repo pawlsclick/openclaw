@@ -1,0 +1,20 @@
+diff --git a/src/agents/openclaw-tools.ts b/src/agents/openclaw-tools.ts
+index eed12b72d..005f43ec9 100644
+--- a/src/agents/openclaw-tools.ts
++++ b/src/agents/openclaw-tools.ts
+@@ -5,6 +5,7 @@ import type { AnyAgentTool } from "./tools/common.js";
+ import { resolvePluginTools } from "../plugins/tools.js";
+ import { resolveSessionAgentId } from "./agent-scope.js";
+ import { createAgentsListTool } from "./tools/agents-list-tool.js";
++import { createBillingReportTool } from "./tools/billing-report-tool.js";
+ import { createBrowserTool } from "./tools/browser-tool.js";
+ import { createCanvasTool } from "./tools/canvas-tool.js";
+ import { createCronTool } from "./tools/cron-tool.js";
+@@ -155,6 +156,7 @@ export function createOpenClawTools(options?: {
+       agentSessionKey: options?.agentSessionKey,
+       config: options?.config,
+     }),
++    createBillingReportTool({ config: options?.config }),
+     ...(webSearchTool ? [webSearchTool] : []),
+     ...(webFetchTool ? [webFetchTool] : []),
+     ...(imageTool ? [imageTool] : []),
