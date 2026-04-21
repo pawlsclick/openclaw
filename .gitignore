@@ -68,6 +68,7 @@ apps/ios/*.dSYM.zip
 apps/ios/*.mobileprovision
 
 # Local untracked files
+.keep_local/
 .local/
 docs/.local/
 IDENTITY.md

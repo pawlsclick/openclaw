@@ -1,14 +1,15 @@
 # OpenClaw Gateway on EC2 (eu-north-1)
 #
-# Provisions a single Ubuntu 24.04 instance with Docker, clones the OpenClaw repo,
-# builds the image, and runs the gateway via Docker Compose. Gateway is bound to
-# loopback; access via SSH tunnel only (no inbound 18789 in security group).
+# Provisions a single vanilla Ubuntu 24.04 instance. UserData installs Xfce desktop,
+# xrdp (port 3389), Node 22, and OpenClaw via "npm install -g openclaw@latest";
+# gateway runs under systemd (loopback bind). Access: SSH tunnel for Control UI
+# (18789), RDP for desktop (3389). No Docker; no clone.
 #
-# Security group must allow inbound SSH (22) from your IP.
-# See: docs/install/aws-ec2.md
+# Security group (default sg-06969578c0d2792ef) must allow inbound 22 and 3389
+# from your IP; no inbound 18789. See: docs/install/aws-ec2.md
 
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "OpenClaw Gateway on EC2 - Ubuntu 24.04, Docker, SSH tunnel access"
+Description: "OpenClaw Gateway on EC2 - Ubuntu 24.04, direct install, Xfce+xrdp (3389), SSH tunnel (18789)"
 
 Parameters:
   KeyName:
@@ -39,25 +40,28 @@ Parameters:
   SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Default: sg-06969578c0d2792ef
-    Description: Security group (must allow inbound SSH 22 from your IP; no 18789)
+    Description: Security group (must allow inbound SSH 22 and RDP 3389 from your IP; no 18789)
 
+  # Live resize of an existing instance: use infra/aws/resize-openclaw-root-volume.sh (ModifyVolume + SSM).
+  # Do not "fix" a running host only by increasing BootVolumeSizeGb and updating this stack: changing
+  # Ebs.VolumeSize in BlockDeviceMappings can replace the EC2 instance (destructive).
   BootVolumeSizeGb:
     Type: Number
-    Default: 80
+    Default: 300
     MinValue: 8
-    MaxValue: 100
-    Description: Root EBS volume size (GB), gp3
+    MaxValue: 500
+    Description: Root EBS volume size (GiB), gp3; new stacks default 300; prod resize uses resize-openclaw-root-volume.sh
 
   AmiId:
     Type: AWS::EC2::Image::Id
-    Default: ami-08d5acd50b6a91c0c
-    Description: Custom OpenClaw gateway AMI (baked from direct-install instance)
+    Default: ami-073130f74f5ffb161
+    Description: Vanilla Ubuntu 24.04 LTS AMI (direct-install UserData runs on first boot)
 
 Resources:
   OpenClawInstance:
     Type: AWS::EC2::Instance
     Metadata:
-      Comment: OpenClaw Gateway - Docker Compose, loopback bind, SSH tunnel access
+      Comment: OpenClaw Gateway - direct install, systemd, Xfce+xrdp, SSH tunnel + RDP
     Properties:
       ImageId: !Ref AmiId
       InstanceType: !Ref InstanceType
@@ -77,7 +81,55 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          echo "OpenClaw direct-install instance booted via CloudFormation at $(date)" >> /var/log/openclaw-cfn-boot.log
+          set -e
+          LOCKFILE=/var/run/openclaw-cfn-userdata.done
+          if [ -f "$LOCKFILE" ]; then exit 0; fi
+          echo "OpenClaw direct-install UserData started at $(date)" >> /var/log/openclaw-cfn-boot.log
+          touch "$LOCKFILE"
+          export DEBIAN_FRONTEND=noninteractive
+
+          # 1) Xfce desktop + xrdp (port 3389)
+          apt-get update
+          apt-get install -y xrdp xfce4 xfce4-goodies xdotool scrot wmctrl
+          echo "xfce4-session" > /home/ubuntu/.xsession
+          chown ubuntu:ubuntu /home/ubuntu/.xsession
+          systemctl enable --now xrdp
+
+          # 2) Node 22 + OpenClaw global
+          curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+          apt-get install -y nodejs
+          npm install -g openclaw@latest
+
+          # 3) OpenClaw config and token (ubuntu user)
+          mkdir -p /home/ubuntu/.openclaw /home/ubuntu/.openclaw/workspace
+          chown -R ubuntu:ubuntu /home/ubuntu/.openclaw
+          TOKEN=$(openssl rand -hex 32)
+          sudo -u ubuntu openclaw config set gateway.mode local
+          sudo -u ubuntu openclaw config set gateway.auth.token "$TOKEN"
+          echo "$TOKEN" > /home/ubuntu/.openclaw/gateway-token.txt
+          chown ubuntu:ubuntu /home/ubuntu/.openclaw/gateway-token.txt
+          chmod 600 /home/ubuntu/.openclaw/gateway-token.txt
+
+          # 4) Systemd unit and start gateway
+          sed 's/^          //' > /etc/systemd/system/openclaw-gateway.service << 'SVCEOF'
+          [Unit]
+          Description=OpenClaw Gateway (direct install)
+          After=network-online.target
+          Wants=network-online.target
+
+          [Service]
+          Type=simple
+          User=ubuntu
+          ExecStart=/usr/bin/openclaw gateway run --bind loopback --port 18789
+          Restart=on-failure
+
+          [Install]
+          WantedBy=multi-user.target
+          SVCEOF
+          systemctl daemon-reload
+          systemctl enable --now openclaw-gateway
+
+          echo "OpenClaw direct-install UserData finished at $(date)" >> /var/log/openclaw-cfn-boot.log
 
   OpenClawEip:
     Type: AWS::EC2::EIP
@@ -109,3 +161,7 @@ Outputs:
   ElasticIp:
     Description: Elastic IP for the OpenClaw instance (stable external IP)
     Value: !Ref OpenClawEip
+
+  RdpConnection:
+    Description: Connect via RDP to PublicIp:3389 (user ubuntu; set password via SSH if needed)
+    Value: !Sub "Connect via RDP to ${OpenClawInstance.PublicIp}:3389 (user ubuntu)"

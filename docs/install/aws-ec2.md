@@ -1,5 +1,5 @@
 ---
-summary: "Run OpenClaw Gateway on AWS EC2 via CloudFormation (Ubuntu 24.04, Docker, SSH tunnel)"
+summary: "Run OpenClaw Gateway on AWS EC2 via CloudFormation (Ubuntu 24.04, direct install, Xfce+RDP)"
 read_when:
   - You want OpenClaw on EC2 in a specific VPC/subnet
   - You prefer infra-as-code (CloudFormation) for the instance
@@ -10,7 +10,7 @@ title: "AWS EC2"
 
 ## Goal
 
-Provision a single Ubuntu 24.04 EC2 instance with Docker, clone OpenClaw, build the image, and run the gateway via Docker Compose. Access is **SSH tunnel only** (no inbound port 18789); the gateway binds to loopback on the host.
+Provision a single vanilla Ubuntu 24.04 EC2 instance. UserData installs **Xfce** desktop, **xrdp** (port 3389), Node 22, and OpenClaw via `npm install -g openclaw@latest`; the gateway runs under systemd (loopback bind). Access: **SSH tunnel** for Control UI (port 18789) and **RDP** for the desktop (port 3389). No Docker; no repo clone.
 
 This guide uses a CloudFormation template in the repo. Defaults target **eu-north-1** and the specs below; you can override parameters.
 
@@ -18,9 +18,9 @@ This guide uses a CloudFormation template in the repo. Defaults target **eu-nort
 
 - AWS CLI configured (account, region, credentials)
 - Key pair in the target region (default name: `awspawlclick`); you need the `.pem` locally
-- VPC and subnet (defaults in the template; use a **public** subnet if you want a public IP for SSH)
-- Security group that allows **inbound SSH (22)** from your IP (no inbound 18789)
-- About 15–20 minutes (first run: instance boot + Docker install + image build)
+- VPC and subnet (defaults in the template; use a **public** subnet if you want a public IP for SSH and RDP)
+- Security group **sg-06969578c0d2792ef** (template default) must allow **inbound SSH (22)** and **inbound RDP (3389)** from your IP; **no** inbound 18789
+- About 10–15 minutes (first run: instance boot + Xfce + xrdp + OpenClaw install)
 
 ## 1) Verify AWS connectivity
 
@@ -35,7 +35,7 @@ aws ec2 describe-subnets --subnet-ids subnet-0954f659cbd458cca --region eu-north
 aws ec2 describe-security-groups --group-ids sg-06969578c0d2792ef --region eu-north-1
 ```
 
-Ensure the security group allows **inbound TCP 22** from your IP (or 0.0.0.0/0 for testing only). There should be **no** inbound rule for port 18789 (access is via SSH tunnel).
+Ensure the security group allows **inbound TCP 22** and **inbound TCP 3389** from your IP (or 0.0.0.0/0 for testing only). There should be **no** inbound rule for port 18789 (access is via SSH tunnel).
 
 **Optional:** If you use the AWS MCP tool in Cursor, run equivalent describe calls for the same VPC, subnet, and security group in `eu-north-1`.
 
@@ -50,8 +50,7 @@ aws cloudformation create-stack \
   --template-body file://infra/aws/openclaw-ec2.yaml \
   --parameters \
     ParameterKey=KeyName,ParameterValue=awspawlclick \
-    ParameterKey=InstanceType,ParameterValue=t3.medium \
-    ParameterKey=BootVolumeSizeGb,ParameterValue=30
+    ParameterKey=InstanceType,ParameterValue=t3.large
 ```
 
 To use a different VPC, subnet, or security group, add or override parameters (e.g. `ParameterKey=VpcId,ParameterValue=vpc-xxxx`).
@@ -75,38 +74,21 @@ aws cloudformation describe-stacks \
 
 Note the `PublicIp` (and `InstanceId` if needed). If `PublicIp` is empty, the instance is in a private subnet; use a bastion or VPN to reach it.
 
-## 3) First SSH and set the gateway token
+## 3) Get the gateway token and (optional) set RDP password
 
-User-data installs Docker, clones the repo, builds the image, and starts the gateway. The first time may take several minutes. Then:
+UserData installs Xfce, xrdp, Node 22, OpenClaw, and a systemd gateway; it also generates a gateway token and writes it to a file. After the stack reaches `CREATE_COMPLETE`, wait a few minutes for first-boot setup to finish, then fetch the token:
+
+```bash
+ssh -i awspawlclick.pem ubuntu@<PublicIp> 'cat /home/ubuntu/.openclaw/gateway-token.txt'
+```
+
+Save this token; you will paste it into the Control UI (step 4). Optionally, set a password for the `ubuntu` user so you can log in via RDP:
 
 ```bash
 ssh -i awspawlclick.pem ubuntu@<PublicIp>
+sudo passwd ubuntu
+# Enter new password when prompted, then exit
 ```
-
-On the instance, generate a gateway token and write it into the config used by the container. Easiest: run the CLI in a one-off container so it uses the same volumes:
-
-```bash
-cd /home/ubuntu/openclaw
-docker compose run --rm openclaw-cli config set gateway.auth.token "$(openssl rand -hex 32)"
-```
-
-Or edit the host config (mounted into the container):
-
-```bash
-# View current config
-cat /home/ubuntu/.openclaw/openclaw.json
-
-# Add or set gateway.auth.token; then restart so the gateway picks it up
-docker compose -f /home/ubuntu/openclaw/docker-compose.yml restart openclaw-gateway
-```
-
-Get a dashboard link with the token (optional):
-
-```bash
-docker compose run --rm openclaw-cli dashboard --no-open
-```
-
-Exit the SSH session when done.
 
 ## 4) Access the Control UI via SSH tunnel
 
@@ -122,31 +104,76 @@ Leave this terminal running. Then in your browser open:
 
 Paste the gateway token (from step 3) when prompted. You can now use the Control UI and chat.
 
-## 5) Security group summary
+## 5) Connect via RDP (desktop)
+
+From your laptop, connect to the instance’s desktop using an RDP client (Windows Remote Desktop, Remmina, etc.):
+
+- **Address:** `<PublicIp>:3389` (use the `PublicIp` from the stack outputs)
+- **User:** `ubuntu`
+- **Password:** Set in step 3 with `sudo passwd ubuntu`, or use SSH key auth if your RDP client supports it
+
+The template installs Xfce and xrdp; you get a full desktop for GUI apps and optional [agent GUI automation](#xrdp--xfce-gui-automation-and-screen-capture).
+
+## 6) Security group summary
 
 - **Inbound 22 (SSH):** Required from your IP (or 0.0.0.0/0 for testing).
+- **Inbound 3389 (RDP):** Required from your IP if you use RDP.
 - **No inbound 18789:** Access to the gateway is only via the SSH tunnel above.
 
-## 6) Restart and persistence
+## 7) Restart and persistence
 
-- The template enables a systemd unit `openclaw-docker.service` so that on instance reboot, `docker compose up -d` runs in `/home/ubuntu/openclaw`.
-- Config and workspace live in `/home/ubuntu/.openclaw` and `/home/ubuntu/.openclaw/workspace` on the host and are mounted into the container; they persist across container and instance restarts.
+- The template enables a systemd unit `openclaw-gateway.service` so that on instance reboot, the gateway runs as the `ubuntu` user (`openclaw gateway run --bind loopback --port 18789`).
+- Config and workspace live in `~/.openclaw` and `~/.openclaw/workspace` on the host and persist across reboots.
 
-## 7) Template location and parameters
+## 8) Template location and parameters
 
 The CloudFormation template is at **`infra/aws/openclaw-ec2.yaml`** in the repo.
 
 Main parameters (with defaults):
 
-| Parameter           | Default                       | Description                          |
-| ------------------- | ----------------------------- | ------------------------------------ |
-| KeyName             | awspawlclick                  | EC2 key pair name                    |
-| InstanceType        | t3.medium                     | Instance type                         |
-| VpcId               | vpc-05c0d292bf26d7bd1         | VPC ID                               |
-| SubnetId            | subnet-0954f659cbd458cca      | Subnet ID (use public for public IP) |
-| SecurityGroupId     | sg-06969578c0d2792ef          | Security group (SSH only; no 18789)  |
-| BootVolumeSizeGb    | 30                            | Root EBS gp3 size (GB)                |
-| AmiId               | (SSM Ubuntu 24.04 LTS)        | AMI; override to pin a specific ID   |
+| Parameter           | Default                       | Description                                                |
+| ------------------- | ----------------------------- | ---------------------------------------------------------- |
+| KeyName             | awspawlclick                  | EC2 key pair name                                         |
+| InstanceType        | t3.large                      | Instance type                                              |
+| VpcId               | vpc-05c0d292bf26d7bd1         | VPC ID                                                     |
+| SubnetId            | subnet-0954f659cbd458cca      | Subnet ID (use public for public IP)                      |
+| SecurityGroupId     | sg-06969578c0d2792ef          | Security group (must allow inbound 22 and 3389; no 18789)  |
+| BootVolumeSizeGb    | 300                           | Root EBS gp3 size (GiB); max 500 in template              |
+| AmiId               | ami-073130f74f5ffb161         | Vanilla Ubuntu 24.04 LTS AMI (direct-install UserData)    |
+
+## Grow root disk on a running instance
+
+Use this when the gateway host is low on disk and you want a **larger root volume without replacing the instance**.
+
+**Do not** try to fix disk only by increasing `BootVolumeSizeGb` and running a stack update on an existing instance: changing root `Ebs.VolumeSize` in `BlockDeviceMappings` can **replace** the EC2 instance (see comments on `BootVolumeSizeGb` in the template).
+
+**Approach:** From your laptop (AWS CLI, **`jq`** for SSM payload assembly, same account as the instance), run the automation script. It creates an EBS **snapshot** (wait until completed), calls **`modify-volume`** to grow the gp3 volume, waits for the modification, then uses **SSM** (`AWS-RunShellScript`) to run **`growpart`** and **`resize2fs`** on the Ubuntu root filesystem. The instance must report **SSM PingStatus Online** (SSM agent + instance profile).
+
+From the repo root:
+
+```bash
+chmod +x infra/aws/resize-openclaw-root-volume.sh
+./infra/aws/resize-openclaw-root-volume.sh \
+  --region eu-north-1 \
+  --instance-id i-0123456789abcdef0 \
+  --target-gib 300
+```
+
+Optional: pass `--volume-id vol-...` if root volume detection fails. Break-glass only: `--skip-snapshot I_ACCEPT_NO_SNAPSHOT` skips the snapshot (not recommended).
+
+If the script exits while waiting for the snapshot but the snapshot later shows **completed** in the EC2 console, **do not** re-run without `--existing-snapshot-id` or you will start a second full snapshot. Resume with the same snapshot id (the script checks it belongs to the instance root volume):
+
+```bash
+./infra/aws/resize-openclaw-root-volume.sh \
+  --region eu-north-1 \
+  --instance-id i-0123456789abcdef0 \
+  --target-gib 300 \
+  --existing-snapshot-id snap-0123456789abcdef0
+```
+
+The default wait for snapshot completion is up to **four hours** (`RESIZE_SNAPSHOT_WAIT_SEC`, override if needed).
+
+After a successful run, the script prints `df` output from the instance. If you need to **restore from the snapshot** (rollback or disaster recovery), use the same snapshot id the script printed and follow AWS: [Replace an Amazon EBS volume using a snapshot](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ebs-restoring-volume.html) (same Availability Zone as the instance; root volume changes usually require **stop** → detach → attach replacement → **start**).
 
 ## Updating OpenClaw on the instance
 
@@ -168,7 +195,7 @@ sudo npm i -g openclaw@latest
 
 Config and workspace live in `~/.openclaw` (e.g. `/home/ubuntu/.openclaw`). Restart the gateway after updating.
 
-**Docker setup:** If you use the CloudFormation Docker flow instead:
+**Docker setup:** If you use the alternative Docker flow (clone repo, Docker Compose) instead of the default direct-install template:
 
 ```bash
 cd /home/ubuntu/openclaw
@@ -179,15 +206,15 @@ docker compose up -d openclaw-gateway
 
 ## XRDP + Xfce: GUI automation and screen capture
 
-This section applies when OpenClaw runs **directly on the host** (e.g. in `/home/ubuntu` or via global npm), not in Docker. If you have XRDP and Xfce on the same Ubuntu server, you can let the agent run GUI apps, automate them with keyboard/mouse, and capture the screen for vision. The gateway must run in an environment where **DISPLAY** is set and where **xdotool** and a screenshot tool are available.
+The default template already installs **Xfce**, **xrdp**, and GUI automation tools (**xdotool**, **scrot**, **wmctrl**) on the host. This section applies when OpenClaw runs **directly on the host** (the default after stack create). To let the agent run GUI apps, automate keyboard/mouse, and capture the screen for vision, the gateway must run in an environment where **DISPLAY** is set (e.g. from a terminal inside your RDP session).
 
-### 1. Install GUI automation and screenshot tools (on the host)
+### 1. GUI tools (already installed by UserData)
+
+The template installs `xdotool`, `scrot`, and `wmctrl`. If you ever need to reinstall:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y xdotool scrot
-# optional: wmctrl for listing/focusing windows
-sudo apt-get install -y wmctrl
+sudo apt-get install -y xdotool scrot wmctrl
 ```
 
 ### 2. Run the gateway with DISPLAY set

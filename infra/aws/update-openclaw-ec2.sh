@@ -7,7 +7,7 @@ set -euo pipefail
 
 REGION="${REGION:-eu-north-1}"
 STACK_NAME="${STACK_NAME:-openclaw-gateway}"
-AMI_ID="${AMI_ID:-ami-08d5acd50b6a91c0c}"
+AMI_ID="${AMI_ID:-ami-08798aaab28f7b459}"
 
 echo "Waiting for AMI '${AMI_ID}' to be available (required before stack update)..."
 aws ec2 wait image-available --region "$REGION" --image-ids "$AMI_ID"
