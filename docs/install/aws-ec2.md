@@ -148,8 +148,113 @@ Main parameters (with defaults):
 | BootVolumeSizeGb    | 30                            | Root EBS gp3 size (GB)                |
 | AmiId               | (SSM Ubuntu 24.04 LTS)        | AMI; override to pin a specific ID   |
 
+## Updating OpenClaw on the instance
+
+**Direct install on the host (no Docker):** If OpenClaw is installed in `/home/ubuntu` (e.g. from source or a clone) or globally via npm:
+
+```bash
+ssh -i awspawlclick.pem ubuntu@<PublicIp>
+# From source in /home/ubuntu:
+cd /home/ubuntu/openclaw
+git pull --rebase origin main
+pnpm install && pnpm build
+# Restart the gateway (however you run it: terminal, systemd, etc.)
+
+# Or global npm:
+sudo npm i -g openclaw@latest
+# or pin: sudo npm i -g openclaw@2026.2.13
+# Then restart the gateway
+```
+
+Config and workspace live in `~/.openclaw` (e.g. `/home/ubuntu/.openclaw`). Restart the gateway after updating.
+
+**Docker setup:** If you use the CloudFormation Docker flow instead:
+
+```bash
+cd /home/ubuntu/openclaw
+git pull --rebase origin main
+docker compose build --pull openclaw-gateway
+docker compose up -d openclaw-gateway
+```
+
+## XRDP + Xfce: GUI automation and screen capture
+
+This section applies when OpenClaw runs **directly on the host** (e.g. in `/home/ubuntu` or via global npm), not in Docker. If you have XRDP and Xfce on the same Ubuntu server, you can let the agent run GUI apps, automate them with keyboard/mouse, and capture the screen for vision. The gateway must run in an environment where **DISPLAY** is set and where **xdotool** and a screenshot tool are available.
+
+### 1. Install GUI automation and screenshot tools (on the host)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y xdotool scrot
+# optional: wmctrl for listing/focusing windows
+sudo apt-get install -y wmctrl
+```
+
+### 2. Run the gateway with DISPLAY set
+
+The agent’s `bash` (exec) runs in the gateway’s environment. For GUI apps and xdotool to target your Xfce session, that environment must have `DISPLAY` set to the same value as your RDP session.
+
+**Option A — From a terminal inside your RDP session (simplest):**
+
+1. Connect via RDP and open a terminal in Xfce.
+2. In that terminal, run:
+   ```bash
+   export DISPLAY=:10
+   openclaw gateway run --port 18789 --verbose
+   ```
+   (Use the value your session actually uses: in the same terminal run `echo $DISPLAY` and use that, often `:10` or `:0` for the first xrdp session.)
+3. Leave that terminal running. Commands the agent runs via exec will then see the same DISPLAY and can open Firefox, use xdotool, etc., on the desktop you see.
+
+**Option B — Gateway as a user service with fixed DISPLAY:**
+
+If you run the gateway as a systemd user service, set DISPLAY in the unit so it matches the RDP session (e.g. `:10`):
+
+```ini
+# ~/.config/systemd/user/openclaw-gateway.service
+[Service]
+Environment=DISPLAY=:10
+ExecStart=/usr/bin/openclaw gateway run --port 18789
+Restart=on-failure
+```
+
+Then start the service **after** you have logged in at least once via RDP (so the X server for that display exists). Reload and start:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now openclaw-gateway
+```
+
+### 3. Use a vision-capable model
+
+In `~/.openclaw/openclaw.json` (or your config), set an agent model that supports images (e.g. Claude, GPT-4V, Gemini). When the agent runs `scrot /tmp/screen.png` and then references `MEDIA:/tmp/screen.png` in a message or tool result, the model will receive the image.
+
+Example (adjust model id to your provider):
+
+```json
+{
+  "agent": {
+    "model": "anthropic/claude-sonnet-4-20250514"
+  }
+}
+```
+
+### 4. Optional: tell the agent about GUI capabilities
+
+Add a short note in the workspace so the agent knows it can use the desktop (e.g. in `~/.openclaw/workspace/AGENTS.md` or a SOUL/TOOLS note):
+
+- On this host, the agent can run GUI apps (e.g. `firefox`, `xfce4-terminal`) and automation tools (`xdotool`, `wmctrl`). Use `scrot` (or `scrot /tmp/screen.png`) to capture the screen; then reference `MEDIA:/tmp/screen.png` (or the path you used) so the model can analyze the screenshot with vision.
+
+With that in place you get:
+
+- **Run GUI software** — agent runs `firefox`, `xfce4-terminal`, etc., and they appear on your Xfce desktop.
+- **GUI automation** — agent uses `xdotool` (and optionally `wmctrl`) for keyboard/mouse and window control.
+- **Screen capture and vision** — agent runs `scrot`, then uses the saved image path with a vision-capable model to “see” the desktop.
+
+**Check what is in place:** Run `./scripts/check-gui-automation.sh [path]`. It writes a Markdown report (default: `./gui-automation-report.md`) with a Summary table, Details, and **Next steps**. Paste the file contents or attach the file to your assistant to confirm state and get follow-up actions. Run the script from the same environment where you start the gateway (e.g. inside your RDP session).
+
 ## See also
 
 - [VPS hosting hub](/vps) — overview of cloud deployments
 - [Docker](/install/docker) — generic Docker Gateway flow
 - [Gateway remote](/gateway/remote) — SSH tunnel and remote client config
+- [Exec tool](/tools/exec) — command execution and host/sandbox
